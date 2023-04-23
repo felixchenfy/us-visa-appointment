@@ -5,7 +5,7 @@ const axios = require('axios');
 (async () => {
     //#region Command line args
     const args = parseArgs(process.argv.slice(2), {string: ['u', 'p', 'c', 'a', 'n', 'd', 'r'], boolean: ['g']})
-    const currentDate = new Date(args.d);
+    const expectedDate = new Date(args.d);
     const usernameInput = args.u;
     const passwordInput = args.p;
     const appointmentId = args.a;
@@ -103,8 +103,9 @@ const axios = require('axios');
     }
 
     async function log(msg) {
-      const currentDate = '[' + new Date().toLocaleString() + ']';
-      console.log(currentDate, msg);
+      const expectedDate = '[' + new Date().toLocaleString() + ']';
+      // console.log doesn't print to the console :(
+      console.warn(expectedDate, msg);
     }
 
     async function notify(msg) {
@@ -130,7 +131,8 @@ const axios = require('axios');
       //#region Init puppeteer
       const browser = await puppeteer.launch();
       // Comment above line and uncomment following line to see puppeteer in action
-      //const browser = await puppeteer.launch({ headless: false });
+      // const browser = await puppeteer.launch({ headless: false });
+
       const page = await browser.newPage();
       const timeout = 5000;
       const navigationTimeout = 60000;
@@ -224,8 +226,10 @@ const axios = require('axios');
           await targetPage.waitForNavigation();
       }
 
+      // NOTE: The following logic is disabled because the webpage it tries to access doesn't exist.
+      //
       // We are logged in now. Check available dates from the API
-      {
+      if (false) {
           const targetPage = page;
           const response = await targetPage.goto('https://ais.usvisa-info.com/en-' + region + '/niv/schedule/' + appointmentId + '/appointment/days/' + consularId + '.json?appointments[expedite]=false');
 
@@ -239,8 +243,8 @@ const axios = require('axios');
           
           const firstDate = new Date(availableDates[0].date);
 
-          if (firstDate > currentDate) {
-            log("There is not an earlier date available than " + currentDate.toISOString().slice(0,10));
+          if (firstDate > expectedDate) {
+            log("There is not an earlier date available than " + expectedDate.toISOString().slice(0,10));
             await browser.close();
             return false;
           }
@@ -276,15 +280,24 @@ const axios = require('axios');
       }
 
       // Click on date input
-      {
+      try {
           const targetPage = page;
           const element = await waitForSelectors([["aria/Date of Appointment *"],["#appointments_consulate_appointment_date"]], targetPage, { timeout, visible: true });
           await scrollIntoViewIfNeeded(element, timeout);
           await element.click({ offset: { x: 394.5, y: 17.53125} });
           await sleep(1000);
+      } catch (error){
+        // If there are no openings at all, the above logic will
+        // be stuck for 10 seconds and throw error.
+        // Let's close the browser and rethrow error.
+        console.error("Failed to open calendar, probably because there is no available appointment.");
+        await sleep(500);
+        await browser.close();
+        throw error
       }
 
       // Keep clicking next button until we find the first available date and click to that date
+      let num_clicks = 0;
       {
           const targetPage = page;
           while (true) {
@@ -296,6 +309,7 @@ const axios = require('axios');
               break;
             } catch (err) {
               {
+                  num_clicks++;
                   const targetPage = page;
                   const element = await waitForSelectors([["aria/Next","aria/[role=\"generic\"]"],["#ui-datepicker-div > div.ui-datepicker-group.ui-datepicker-group-last > div > a > span"]], targetPage, { timeout, visible: true });
                   await scrollIntoViewIfNeeded(element, timeout);
@@ -303,6 +317,37 @@ const axios = require('axios');
               }
             }
           }
+      }
+      
+      // Use the number of clicks to deduce the month of the next available slot.
+      // If today is April, and num_clicks=1, then the next available
+      // opening is in May or June.
+      //
+      // BIG WARNING1:
+      // This approach has a 1-month error --- If you enter the expected date of (m=X,d=Y),
+      // the program selects extra days between (m=X,d=Y) to (m=X,d=31).
+      {
+        // returns the first date of the month that is 3 months from now
+        function getFirstDateAfterXMonths(x) {
+          const currentDate = new Date();
+          const currentMonth = currentDate.getMonth();
+          const targetMonth = currentMonth + x;
+          const targetYear = currentDate.getFullYear() + Math.floor(targetMonth / 12);
+          const firstDate = new Date(targetYear, targetMonth % 12, 1);
+          return firstDate;
+        }
+        const firstDate = getFirstDateAfterXMonths(num_clicks + 1);
+        if (firstDate <= expectedDate) {
+          notify("Found an earlier date! " + firstDate.toISOString().slice(0,10));
+        } else {
+          function getYearAndMonth(date) {
+            return `${date.getFullYear()}/${String(date.getMonth() + 1).padStart(2, '0')}`;
+          }
+          log("No desired date. The earlist date is in month: " + getYearAndMonth(firstDate));
+          await sleep(500);
+          await browser.close();
+          return false;
+        }
       }
 
       // Select the first available Time from the time dropdown
@@ -319,6 +364,7 @@ const axios = require('axios');
       }
 
       // Click on reschedule button
+      log("Good news! Click on reschedule button");
       {
           const targetPage = page;
           const element = await waitForSelectors([["aria/Reschedule"],["#appointments_submit"]], targetPage, { timeout, visible: true });
@@ -328,6 +374,7 @@ const axios = require('axios');
       }
 
       // Click on submit button on the confirmation popup
+      log("Good news! Click on submit button on the confirmation popup");
       {
         const targetPage = page;
         const element = await waitForSelectors([["aria/Cancel"],["body > div.reveal-overlay > div > div > a.button.alert"]], targetPage, { timeout, visible: true });
@@ -336,6 +383,7 @@ const axios = require('axios');
         await sleep(5000);
       }
 
+      log("Good news! Successfully booked the appointment");
       await browser.close();
       return true;
       //#endregion
@@ -343,6 +391,7 @@ const axios = require('axios');
 
     while (true){
       try{
+        log("------------------------------------------------");
         const result = await runLogic();
 
         if (result){
@@ -351,6 +400,7 @@ const axios = require('axios');
         }
       } catch (err){
         // Swallow the error and keep running in case we encountered an error.
+        // console.error(err);
       }
 
       await sleep(retryTimeout);
