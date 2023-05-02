@@ -4,16 +4,17 @@ const axios = require('axios');
 
 (async () => {
     //#region Command line args
-    const args = parseArgs(process.argv.slice(2), {string: ['u', 'p', 'c', 'a', 'n', 'd', 'r'], boolean: ['g']})
+    const args = parseArgs(process.argv.slice(2), {string: ['u', 'p', 'c', 'a', 'n', 'd', 'r'], boolean: ['g', 'b']})
     const expectedDate = new Date(args.d);
     const usernameInput = args.u;
     const passwordInput = args.p;
     const appointmentId = args.a;
     const retryTimeout = args.t * 1000;
-    const consularId = args.c;
+    // const consularId = args.c;
     const userToken = args.n;
     const groupAppointment = args.g;
     const region = args.r;
+    const runInBackground = args.b; // pass -b to run in background.
     //#endregion
 	
     //#region Helper functions
@@ -126,23 +127,32 @@ const axios = require('axios');
       await axios.post(apiEndpoint, data);
     }
     //#endregion
+    
+    // Configurations:
+    let page;
+    let browser;
+    const timeout = 3000;
+    const navigationTimeout = 10000;
+    const smallTimeout = 100;
+    let sleep_ratio = 1;
 
-    async function runLogic() {
-      //#region Init puppeteer
-      const browser = await puppeteer.launch();
-      // Comment above line and uncomment following line to see puppeteer in action
-      // const browser = await puppeteer.launch({ headless: false });
+    async function runLogic(consularId, do_login) {
+      if (do_login) {
+      if (runInBackground) {
+        browser = await puppeteer.launch();
+      } else {
+        // Open a browser to show the steps. 
+        browser = await puppeteer.launch({ headless: false });
+        sleep_ratio = 3;
+      }
+      page = await browser.newPage();
 
-      const page = await browser.newPage();
-      const timeout = 5000;
-      const navigationTimeout = 60000;
-      const smallTimeout = 100;
       page.setDefaultTimeout(timeout);
       page.setDefaultNavigationTimeout(navigationTimeout);
       //#endregion
-
+        
       //#region Logic
-	  
+      
       // Set the viewport to avoid elements changing places 
       {
           const targetPage = page;
@@ -180,7 +190,7 @@ const axios = require('axios');
             }, usernameInput);
           }
       }
-	  
+    
       // Hit tab to go to the password input
       {
           const targetPage = page;
@@ -190,12 +200,12 @@ const axios = require('axios');
           const targetPage = page;
           await targetPage.keyboard.up("Tab");
       }
-	  
+    
       // Type password
       {
           const targetPage = page;
           const element = await waitForSelectors([["aria/Password"],["#user_password"]], targetPage, { timeout, visible: true });
-		  await scrollIntoViewIfNeeded(element, timeout);
+      await scrollIntoViewIfNeeded(element, timeout);
           const type = await element.evaluate(el => el.type);
           if (["textarea","select-one","text","url","tel","search","password","number","email"].includes(type)) {
             await element.type(passwordInput);
@@ -208,7 +218,7 @@ const axios = require('axios');
             }, passwordInput);
           }
       }
-	  
+    
       // Tick the checkbox for agreement
       {
           const targetPage = page;
@@ -226,48 +236,23 @@ const axios = require('axios');
           await targetPage.waitForNavigation();
       }
 
-      // NOTE: The following logic is disabled because the webpage it tries to access doesn't exist.
-      //
-      // We are logged in now. Check available dates from the API
-      if (false) {
-          const targetPage = page;
-          const response = await targetPage.goto('https://ais.usvisa-info.com/en-' + region + '/niv/schedule/' + appointmentId + '/appointment/days/' + consularId + '.json?appointments[expedite]=false');
-
-          const availableDates = JSON.parse(await response.text());
-
-          if (availableDates.length <= 0) {
-            log("There are no available dates for consulate with id " + consularId);
-            await browser.close();
-            return false;
-          }
-          
-          const firstDate = new Date(availableDates[0].date);
-
-          if (firstDate > expectedDate) {
-            log("There is not an earlier date available than " + expectedDate.toISOString().slice(0,10));
-            await browser.close();
-            return false;
-          }
-
-          notify("Found an earlier date! " + firstDate.toISOString().slice(0,10));
-      }    
-
-      // Go to appointment page
-      {
-          const targetPage = page;
-          await targetPage.goto('https://ais.usvisa-info.com/en-' + region + '/niv/schedule/' + appointmentId + '/appointment', { waitUntil: 'domcontentloaded' });
-          await sleep(1000);
-      }     
-
-      // Select multiple people if it is a group appointment
-      {
-          if(groupAppointment){
+        // Go to appointment page
+        {
             const targetPage = page;
-            const element = await waitForSelectors([["aria/Continue"],["#main > div.mainContent > form > div:nth-child(3) > div > input"]], targetPage, { timeout, visible: true });
-            await scrollIntoViewIfNeeded(element, timeout);
-            await element.click({ offset: { x: 70.515625, y: 25.25} });
-            await sleep(1000);
-          }
+            await targetPage.goto('https://ais.usvisa-info.com/en-' + region + '/niv/schedule/' + appointmentId + '/appointment', { waitUntil: 'domcontentloaded' });
+            await sleep(sleep_ratio * 500);
+        }     
+
+        // Select multiple people if it is a group appointment
+        {
+            if(groupAppointment){
+              const targetPage = page;
+              const element = await waitForSelectors([["aria/Continue"],["#main > div.mainContent > form > div:nth-child(3) > div > input"]], targetPage, { timeout, visible: true });
+              await scrollIntoViewIfNeeded(element, timeout);
+              await element.click({ offset: { x: 70.515625, y: 25.25} });
+              await sleep(sleep_ratio * 500);
+            }
+        }
       }
 
       // Select the specified consular from the dropdown
@@ -276,7 +261,7 @@ const axios = require('axios');
           const element = await waitForSelectors([["aria/Consular Section Appointment","aria/[role=\"combobox\"]"],["#appointments_consulate_appointment_facility_id"]], targetPage, { timeout, visible: true });
           await scrollIntoViewIfNeeded(element, timeout);    
           await page.select("#appointments_consulate_appointment_facility_id", consularId);
-          await sleep(1000);
+          await sleep(sleep_ratio * 500);
       }
 
       // Click on date input
@@ -285,15 +270,14 @@ const axios = require('axios');
           const element = await waitForSelectors([["aria/Date of Appointment *"],["#appointments_consulate_appointment_date"]], targetPage, { timeout, visible: true });
           await scrollIntoViewIfNeeded(element, timeout);
           await element.click({ offset: { x: 394.5, y: 17.53125} });
-          await sleep(1000);
+          await sleep(sleep_ratio * 300);
       } catch (error){
         // If there are no openings at all, the above logic will
-        // be stuck for 10 seconds and throw error.
+        // be stuck for a few seconds and throw error.
         // Let's close the browser and rethrow error.
         console.error("Failed to open calendar, probably because there is no available appointment.");
-        await sleep(500);
-        await browser.close();
-        throw error
+        await sleep(sleep_ratio * 500);
+        return false;
       }
 
       // Keep clicking next button until we find the first available date and click to that date
@@ -305,7 +289,7 @@ const axios = require('axios');
               const element = await waitForSelectors([["aria/25[role=\"link\"]"],["#ui-datepicker-div > div.ui-datepicker-group.ui-datepicker-group > table > tbody > tr > td.undefined > a"]], targetPage, { timeout:smallTimeout, visible: true });
               await scrollIntoViewIfNeeded(element, timeout);
               await page.click('#ui-datepicker-div > div.ui-datepicker-group.ui-datepicker-group > table > tbody > tr > td.undefined > a');
-              await sleep(500);
+              await sleep(sleep_ratio * 200);
               break;
             } catch (err) {
               {
@@ -326,8 +310,15 @@ const axios = require('axios');
       // BIG WARNING1:
       // This approach has a 1-month error --- If you enter the expected date of (m=X,d=Y),
       // the program selects extra days between (m=X,d=Y) to (m=X,d=31).
-      {
-        // returns the first date of the month that is 3 months from now
+      if (num_clicks == 0) {
+        // WARNING: Feiyu added the following logic to avoid making appointment
+        // within 2 months. Feel free to delete this if logic if it doesn't fit your need.
+        notify("Found a date in the next two months! num_clicks == 0");
+        notify("However, that's too early and I don't like it.");
+        await sleep(sleep_ratio * 300);
+        return false;
+      } else {
+        // returns the first date of the month that is X months from now
         function getFirstDateAfterXMonths(x) {
           const currentDate = new Date();
           const currentMonth = currentDate.getMonth();
@@ -344,8 +335,7 @@ const axios = require('axios');
             return `${date.getFullYear()}/${String(date.getMonth() + 1).padStart(2, '0')}`;
           }
           log("No desired date. The earlist date is in month: " + getYearAndMonth(firstDate));
-          await sleep(500);
-          await browser.close();
+          await sleep(sleep_ratio * 300);
           return false;
         }
       }
@@ -360,7 +350,7 @@ const axios = require('axios');
             const event = new Event('change', {bubbles: true});
             document.querySelector('#appointments_consulate_appointment_time').dispatchEvent(event);
           })
-          await sleep(1000);
+          await sleep(sleep_ratio *1000);
       }
 
       // Click on reschedule button
@@ -370,7 +360,7 @@ const axios = require('axios');
           const element = await waitForSelectors([["aria/Reschedule"],["#appointments_submit"]], targetPage, { timeout, visible: true });
           await scrollIntoViewIfNeeded(element, timeout);
           await element.click({ offset: { x: 78.109375, y: 20.0625} });
-          await sleep(1000);
+          await sleep(sleep_ratio *1000);
       }
 
       // Click on submit button on the confirmation popup
@@ -380,29 +370,38 @@ const axios = require('axios');
         const element = await waitForSelectors([["aria/Cancel"],["body > div.reveal-overlay > div > div > a.button.alert"]], targetPage, { timeout, visible: true });
         await scrollIntoViewIfNeeded(element, timeout);
         await page.click('body > div.reveal-overlay > div > div > a.button.alert');
-        await sleep(5000);
+        await sleep(sleep_ratio * 5000);
       }
 
       log("Good news! Successfully booked the appointment");
-      await browser.close();
       return true;
       //#endregion
     }
-
-    while (true){
-      try{
-        log("------------------------------------------------");
-        const result = await runLogic();
-
-        if (result){
-          notify("Successfully scheduled a new appointment");
-          break;
+    const consularIds = ["89", "90", "91", "92", "93", "94", "95"];
+    // const consularIds = ["95"];
+    found_appointment = false;
+    while (!found_appointment){
+      // -c Consular id. Halifax 90, Montreal 91, Ottowa 92, Quebec City 93, Toronto 94, Vancouver is 95 for Canada. You can find ids for other consulates from the dropdown values in the appointment page.
+      // 93 94 gives no result
+      log("------------------------------------------------");
+      for(let i = 0; i < consularIds.length; i++) {
+        log("Try consularId: " + consularIds[i])
+        try{
+          let do_login = i == 0;
+          const result = await runLogic(consularIds[i], do_login);
+          if (result){
+            notify("Successfully scheduled a new appointment");
+            found_appointment = true;
+            break;
+          }
+        } catch (err){
+          // Swallow the error and keep running in case we encountered an error.
+          console.error(err.message.split('\n')[0]);
         }
-      } catch (err){
-        // Swallow the error and keep running in case we encountered an error.
-        // console.error(err);
-      }
-
+        await sleep(1000);
+    }
+      await browser.close();
+      log("------------------------------------------------");
       await sleep(retryTimeout);
     }
 })();
